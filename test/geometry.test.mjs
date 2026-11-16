@@ -16,7 +16,7 @@ for (const t of Object.keys(G.PRIMITIVES)) check('Grundform ' + t, { type: t, pa
 const expectParts = { 'Alle Teile': 3, 'Beide': 2 };
 for (const [id, T] of Object.entries(TEMPLATES)) {
   const part = T.params.find(p => p.key === 'part');
-  for (const opt of part ? part.options : [null]) for (const v of id === 'halo' ? ['A', 'B'] : [null]) {
+  for (const opt of part ? part.options : [null]) for (const v of id === 'halo' ? ['A', 'B', 'Touch'] : [null]) {
     const params = {}; if (opt) params.part = opt; if (v) params.variant = v;
     check(`Vorlage ${id} ${opt || ''} ${v || ''}`, { type: 'template', template: id, params }, id === 'spacer' ? 4 : (expectParts[opt] ?? 1));
   }

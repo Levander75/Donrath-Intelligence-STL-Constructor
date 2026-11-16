@@ -15,6 +15,11 @@ function halo(k, A, p) {
   const GAP = p.gap;
   const PADS = [['my', 0, 0], ['up', 0, SL[2]], ['dn', 0, -SL[2]]];
   const C = k.C;
+  // Touch-Variante: Platine liegt mit der Oberseite direkt an der Haut (SKIN_B), Elektroden darunter
+  const TOUCH = p.variant === 'Touch';
+  const PCB_TH = 1.6, PCB_U = SKIN_B - PCB_TH; // Unterseite der Platine
+  const POSTS = [[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([a, b]) => [a * 16, b * 16]); // Andrück-Säulen = Platinenlöcher
+  const RING_R = DISH_D / 2 - 2.0, RING_W = 1.6;
 
   const ringCircle = (r, w) => A.k(A.k(C.circle(r + w, k.seg)).subtract(A.k(C.circle(r, k.seg))));
   const ringSlot = (L, Wd, w) => A.k(k.rrect(L + 2 * w, Wd + 2 * w, Wd / 2 + w - 0.01).subtract(k.rrect(L, Wd, Wd / 2 - 0.01)));
@@ -26,7 +31,21 @@ function halo(k, A, p) {
     const my = k.extrude(ringCircle(2.4, 1.0), z0, z1);
     return k.union([up, dn, my]);
   }
+  function touchShell() {
+    let top = k.sub(k.rbox(W, W, SPLIT, H, R, 3), k.rbox(W - 2 * WALL, W - 2 * WALL, SPLIT - 1, SKIN_B, R - WALL));
+    top = k.sub(top, k.cyl(DISH_D, DISH_F, H + 1)); // Mulde: 1,4 mm Haut über den Elektroden
+    // Schraubdome reichen bis knapp über die Unterschalen-Dome (Platine hat dort Aussparungen R 3)
+    for (const [x, y] of BOSS) top = k.add(top, k.sub(k.cyl(5, PCB_B, SKIN_B + 0.1, x, y), k.cyl(1.7, PCB_B - 1, SKIN_B - 0.6, x, y)));
+    // Zentrierstifte in die Platinenlöcher
+    for (const [x, y] of POSTS) top = k.add(top, k.cyl(2.0, SKIN_B - 1.3, SKIN_B + 0.1, x, y));
+    // Leuchtring: Nut von innen, oben bleiben ringSkin mm stehen – die LEDs sitzen in der Nut
+    if (p.ring === 'ja') top = k.sub(top, A.k(k.extrude(ringCircle(RING_R - RING_W / 2, RING_W), SKIN_B - 1, DISH_F - p.ringSkin)));
+    // Erhabene Symbole auf dem Muldenboden
+    if (p.symbols === 'ja') top = k.add(top, symbols(DISH_F - 0.01, DISH_F + p.raise));
+    return top;
+  }
   function shell() {
+    if (TOUCH) return touchShell();
     let top = k.sub(k.rbox(W, W, SPLIT, H, R, 3), k.rbox(W - 2 * WALL, W - 2 * WALL, SPLIT - 1, SKIN_B, R - WALL));
     top = k.sub(top, k.cyl(DISH_D, DISH_F, H + 1), k.cyl(2.2, SKIN_B - 1, H + 1, 0, W / 2 - 6.5));
     for (const [x, y] of BOSS) top = k.add(top, k.sub(k.cyl(5, PCB_T, SKIN_B + 0.1, x, y), k.cyl(1.7, PCB_T - 1, SKIN_B - 0.6, x, y)));
@@ -63,6 +82,9 @@ function halo(k, A, p) {
       bot = k.sub(bot, k.cyl(2.4, -1, PCB_B + 1, x, y), k.cyl(4.2, -1, 1.4, x, y));
     }
     for (const [x, y] of MAG) bot = k.sub(bot, k.cyl(p.magD + 0.2, -1, p.magH + 0.1, x, y));
+    if (TOUCH) { // Andrück-Säulen: drücken die Platine gegen die Haut der Oberschale
+      for (const [x, y] of POSTS) bot = k.add(bot, k.sub(k.cyl(4.2, FLOOR - 0.01, PCB_U + p.press, x, y), k.cyl(2.6, PCB_U + p.press - 1.2, PCB_U + 1, x, y)));
+    }
     return bot;
   }
   function wall() {
@@ -75,7 +97,15 @@ function halo(k, A, p) {
     }
     return h;
   }
+  function touchStrip() { // gleiche Haut wie die Mulde: Empfindlichkeit, Symbole und Leuchtring testen
+    let t = k.sub(k.rbox(64, 30, 0, 3.4, 4), k.rbox(58, 24, -1, 2.0, 2));
+    const syms = A.k(A.k(symbols(3.39, 3.4 + p.raise)).translate([-15, -SL[2] / 2, 0])); // „My“ und „Auf“ – „Ab“ fällt weg
+    t = k.add(t, A.k(syms.intersect(k.extrude(k.rrect(58, 26, 2), 0, 10))));
+    t = k.sub(t, A.k(k.extrude(A.k(ringSlot(30, 14, RING_W)), 1.9, 3.4 - p.ringSkin).translate([12, 0, 0])));
+    return t;
+  }
   function teststrip() {
+    if (TOUCH) return touchStrip();
     let t = k.sub(k.rbox(64, 28, 0, 2.4, 4), k.rbox(58, 22, 1.4, 3, 2));
     const slA = A.k(ringCircle(KEY_MY / 2, GAP).subtract(sq(4, 6, KEY_MY / 2 + GAP / 2, 0)));
     t = k.sub(t, A.k(k.extrude(slA, -1, 4).translate([-15, 0, 0])));
@@ -83,12 +113,12 @@ function halo(k, A, p) {
     return t;
   }
   switch (p.part) {
-    case 'Oberschale': return k.flipToBed(shell());
+    case 'Oberschale': return TOUCH ? k.toBed(shell()) : k.flipToBed(shell());
     case 'Unterschale': return k.toBed(bottom());
     case 'Wandschale': return k.toBed(wall());
     case 'Teststreifen': return k.toBed(teststrip());
     case 'Zusammengebaut': return k.toBed(k.union([shell(), bottom()]));
-    default: return k.row([k.flipToBed(shell()), k.toBed(bottom()), k.toBed(wall())], 10);
+    default: return k.row([TOUCH ? k.toBed(shell()) : k.flipToBed(shell()), k.toBed(bottom()), k.toBed(wall())], 10);
   }
 }
 
@@ -203,11 +233,15 @@ function stand(k, A, p) {
 export const TEMPLATES = {
   halo: {
     label: 'TUBIQ Halo Handsender', icon: 'remote',
-    desc: 'Wandsender 60 × 60 mm mit eingebauten Tasten (Biegezunge oder Membran), Unterschale, Wandschale und Teststreifen.',
+    desc: 'Wandsender 60 × 60 mm – Tasten als Biegezunge (A), Membran (B) oder Touch mit Leuchtring; Unterschale, Wandschale, Teststreifen.',
     params: [
       sel('part', 'Teil', ['Alle Teile', 'Oberschale', 'Unterschale', 'Wandschale', 'Teststreifen', 'Zusammengebaut'], 'Alle Teile'),
-      sel('variant', 'Tasten', ['B', 'A'], 'B'),
-      sel('symbols', 'Symbole einprägen', ['ja', 'nein'], 'ja'),
+      sel('variant', 'Tasten', ['B', 'A', 'Touch'], 'B'),
+      sel('symbols', 'Symbole', ['ja', 'nein'], 'ja'),
+      num('raise', 'Symbole erhaben (Touch)', 0.3, 0.2, 0.8, 0.05),
+      sel('ring', 'Leuchtring (Touch)', ['ja', 'nein'], 'ja'),
+      num('ringSkin', 'Haut über Leuchtring', 0.6, 0.4, 1.0, 0.05),
+      num('press', 'Platinen-Andruck (Touch)', 0.1, 0, 0.4, 0.05),
       num('W', 'Kantenlänge', 60, 45, 90, 0.5),
       num('H', 'Gesamthöhe', 15, 13, 25, 0.5),
       num('R', 'Eckenradius', 14, 2, 30, 0.5),
