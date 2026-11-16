@@ -10,4 +10,8 @@ contextBridge.exposeInMainWorld('dicApi', {
   saveFile: (kind, name, data) => ipcRenderer.invoke('file:save', { kind, name, data }),
   writeFile: (path, data) => ipcRenderer.invoke('file:write', { path, data }),
   confirm: (message, detail, buttons) => ipcRenderer.invoke('app:confirm', { message, detail, buttons }),
+  onCloseRequest: (cb) => ipcRenderer.on('app:close-request', () => cb()),
+  confirmClose: () => ipcRenderer.send('app:close-confirmed'),
+  onOpenFile: (cb) => ipcRenderer.on('app:open-file', (_e, f) => cb(f)),
+  ready: () => ipcRenderer.send('app:ready'),
 });

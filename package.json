@@ -1,7 +1,7 @@
 {
   "name": "donrath-intelligence-stl-constructor",
   "productName": "Donrath Intelligence STL Constructor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Parametrischer 3D-Konstruktor für den 3D-Druck – Formen, boolesche Operationen, Vorlagen, Druck-Check, STL/3MF.",
   "author": "Donrath Intelligence",
   "license": "UNLICENSED",
@@ -12,7 +12,7 @@
     "start": "npm run build:renderer && electron .",
     "dist": "node build.mjs --min && electron-builder --win --x64",
     "dist:zip": "node build.mjs --min && electron-builder --win zip --x64",
-    "test": "node test/geometry.test.mjs"
+    "test": "node --no-warnings test/geometry.test.mjs && node --no-warnings test/io.test.mjs"
   },
   "devDependencies": {
     "electron": "^45.3.3",

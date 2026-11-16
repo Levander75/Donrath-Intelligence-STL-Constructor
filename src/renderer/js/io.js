@@ -1,7 +1,9 @@
-// Import / Export: STL, OBJ, 3MF, Projektdatei
+// Import / Export: STL, OBJ, 3MF, PLY, AMF, OFF, X3D, Projektdatei
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
+import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { AMFLoader } from 'three/examples/jsm/loaders/AMFLoader.js';
 import * as THREE from 'three';
 
 // ---------- Export ----------
@@ -52,6 +54,93 @@ export function to3MF(objects) {
     { name: '3D/3dmodel.model', data: enc.encode(model) },
   ]);
 }
+// Exportformate – alle Formate bekommen eine Liste {name, vert, tri, color}
+const num = (x) => (Math.round(x * 1e5) / 1e5).toString();
+const hexRGB = (c) => { const h = String(c || '#DDDDDD').replace('#', ''); return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16) / 255); };
+function faceNormal(v, a, b, c) {
+  const ux = v[b] - v[a], uy = v[b + 1] - v[a + 1], uz = v[b + 2] - v[a + 2], vx = v[c] - v[a], vy = v[c + 1] - v[a + 1], vz = v[c + 2] - v[a + 2];
+  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; return [nx / l, ny / l, nz / l];
+}
+export function mergeObjects(objects) {
+  let tv = 0, tt = 0; objects.forEach(m => { tv += m.vert.length; tt += m.tri.length; });
+  const vert = new Float32Array(tv), tri = new Uint32Array(tt); let ov = 0, ot = 0;
+  for (const m of objects) { vert.set(m.vert, ov); for (let i = 0; i < m.tri.length; i++) tri[ot + i] = m.tri[i] + ov / 3; ov += m.vert.length; ot += m.tri.length; }
+  return { vert, tri };
+}
+export function toAsciiSTL(objects) {
+  const out = [];
+  for (const o of objects) {
+    const nm = String(o.name).replace(/\s+/g, '_'); out.push(`solid ${nm}`); const v = o.vert;
+    for (let i = 0; i < o.tri.length; i += 3) {
+      const a = o.tri[i] * 3, b = o.tri[i + 1] * 3, c = o.tri[i + 2] * 3; const n = faceNormal(v, a, b, c);
+      out.push(` facet normal ${n.map(num).join(' ')}`, '  outer loop');
+      for (const k of [a, b, c]) out.push(`   vertex ${num(v[k])} ${num(v[k + 1])} ${num(v[k + 2])}`);
+      out.push('  endloop', ' endfacet');
+    }
+    out.push(`endsolid ${nm}`);
+  }
+  return new TextEncoder().encode(out.join('\n') + '\n');
+}
+export function toOBJ(objects) {
+  const out = ['# Donrath Intelligence STL Constructor', '# Einheit: Millimeter, Z oben', 'mtllib none']; let base = 1;
+  for (const o of objects) {
+    out.push(`o ${String(o.name).replace(/\s+/g, '_')}`);
+    for (let i = 0; i < o.vert.length; i += 3) out.push(`v ${num(o.vert[i])} ${num(o.vert[i + 1])} ${num(o.vert[i + 2])}`);
+    for (let i = 0; i < o.tri.length; i += 3) out.push(`f ${o.tri[i] + base} ${o.tri[i + 1] + base} ${o.tri[i + 2] + base}`);
+    base += o.vert.length / 3;
+  }
+  return new TextEncoder().encode(out.filter(l => l !== 'mtllib none').join('\n') + '\n');
+}
+export function toPLY(objects) { // binär, mit Eckpunktfarben je Objekt
+  const nv = objects.reduce((a, o) => a + o.vert.length / 3, 0), nf = objects.reduce((a, o) => a + o.tri.length / 3, 0);
+  const head = new TextEncoder().encode(`ply\nformat binary_little_endian 1.0\ncomment Donrath Intelligence STL Constructor (mm)\nelement vertex ${nv}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face ${nf}\nproperty list uchar uint vertex_indices\nend_header\n`);
+  const buf = new ArrayBuffer(head.length + nv * 15 + nf * 13); new Uint8Array(buf).set(head); const dv = new DataView(buf); let o = head.length, base = 0;
+  for (const ob of objects) { const c = hexRGB(ob.color).map(x => Math.round(x * 255)); for (let i = 0; i < ob.vert.length; i += 3) { dv.setFloat32(o, ob.vert[i], true); dv.setFloat32(o + 4, ob.vert[i + 1], true); dv.setFloat32(o + 8, ob.vert[i + 2], true); dv.setUint8(o + 12, c[0]); dv.setUint8(o + 13, c[1]); dv.setUint8(o + 14, c[2]); o += 15; } }
+  for (const ob of objects) { for (let i = 0; i < ob.tri.length; i += 3) { dv.setUint8(o, 3); dv.setUint32(o + 1, ob.tri[i] + base, true); dv.setUint32(o + 5, ob.tri[i + 1] + base, true); dv.setUint32(o + 9, ob.tri[i + 2] + base, true); o += 13; } base += ob.vert.length / 3; }
+  return new Uint8Array(buf);
+}
+export function toAMF(objects) {
+  let s = `<?xml version="1.0" encoding="UTF-8"?>\n<amf unit="millimeter" version="1.1">\n<metadata type="producer">Donrath Intelligence STL Constructor</metadata>\n`;
+  objects.forEach((o, i) => {
+    const [r, g, b] = hexRGB(o.color);
+    s += `<object id="${i}"><metadata type="name">${esc(o.name)}</metadata><color><r>${num(r)}</r><g>${num(g)}</g><b>${num(b)}</b></color><mesh><vertices>`;
+    for (let k = 0; k < o.vert.length; k += 3) s += `<vertex><coordinates><x>${num(o.vert[k])}</x><y>${num(o.vert[k + 1])}</y><z>${num(o.vert[k + 2])}</z></coordinates></vertex>`;
+    s += '</vertices><volume>';
+    for (let k = 0; k < o.tri.length; k += 3) s += `<triangle><v1>${o.tri[k]}</v1><v2>${o.tri[k + 1]}</v2><v3>${o.tri[k + 2]}</v3></triangle>`;
+    s += '</volume></mesh></object>\n';
+  });
+  return new TextEncoder().encode(s + '</amf>\n');
+}
+export function toOFF(objects) {
+  const { vert, tri } = mergeObjects(objects); const out = ['OFF', `${vert.length / 3} ${tri.length / 3} 0`];
+  for (let i = 0; i < vert.length; i += 3) out.push(`${num(vert[i])} ${num(vert[i + 1])} ${num(vert[i + 2])}`);
+  for (let i = 0; i < tri.length; i += 3) out.push(`3 ${tri[i]} ${tri[i + 1]} ${tri[i + 2]}`);
+  return new TextEncoder().encode(out.join('\n') + '\n');
+}
+export function toX3D(objects) { // für Farbdrucker (z. B. Gips-/PolyJet-Dienste); Einheit mm
+  let s = `<?xml version="1.0" encoding="UTF-8"?>\n<X3D profile="Interchange" version="3.3"><head><meta name="generator" content="Donrath Intelligence STL Constructor"/><unit category="length" name="millimeter" conversionFactor="0.001"/></head><Scene>\n`;
+  for (const o of objects) {
+    const [r, g, b] = hexRGB(o.color); let pts = '', idx = '';
+    for (let k = 0; k < o.vert.length; k += 3) pts += `${num(o.vert[k])} ${num(o.vert[k + 1])} ${num(o.vert[k + 2])} `;
+    for (let k = 0; k < o.tri.length; k += 3) idx += `${o.tri[k]} ${o.tri[k + 1]} ${o.tri[k + 2]} -1 `;
+    s += `<Shape DEF="${esc(String(o.name).replace(/\s+/g, '_'))}"><Appearance><Material diffuseColor="${num(r)} ${num(g)} ${num(b)}"/></Appearance><IndexedFaceSet solid="true" coordIndex="${idx.trim()}"><Coordinate point="${pts.trim()}"/></IndexedFaceSet></Shape>\n`;
+  }
+  return new TextEncoder().encode(s + '</Scene></X3D>\n');
+}
+
+// Alle Exportformate an einer Stelle
+export const EXPORT_FORMATS = {
+  stl: { label: 'STL (binär)', ext: 'stl', desc: 'Standard für alle Slicer', multi: 'merge', write: (o) => { const m = mergeObjects(o); return toBinarySTL(m.vert, m.tri); } },
+  stla: { label: 'STL (ASCII)', ext: 'stl', desc: 'Textformat, für ältere Programme', write: toAsciiSTL },
+  '3mf': { label: '3MF', ext: '3mf', desc: 'Mehrere Objekte mit Farben – empfohlen für Bambu, Prusa, Orca, Cura', write: to3MF },
+  obj: { label: 'OBJ', ext: 'obj', desc: 'Universell, für CAD/Blender und Harzdrucker-Slicer', write: toOBJ },
+  ply: { label: 'PLY (binär, farbig)', ext: 'ply', desc: 'Mit Farben je Objekt, für Farbdruck und Meshlab', write: toPLY },
+  amf: { label: 'AMF', ext: 'amf', desc: 'Additive Manufacturing Format, mehrere Objekte mit Farben', write: toAMF },
+  off: { label: 'OFF', ext: 'off', desc: 'Einfaches Netzformat (Meshlab, CGAL, OpenSCAD)', write: toOFF },
+  x3d: { label: 'X3D', ext: 'x3d', desc: 'Für Farbdruck-Dienste (z. B. Vollfarb-Gips)', write: toX3D },
+};
+export const IMPORT_EXTENSIONS = ['stl', 'obj', '3mf', 'ply', 'amf', 'off'];
+
 const esc = (s) => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
 // Minimaler ZIP-Writer (ohne Kompression)
@@ -90,8 +179,21 @@ export function importMesh(fileName, bytes) {
   if (ext === 'stl') geos.push({ name: base(fileName), geo: new STLLoader().parse(ab) });
   else if (ext === 'obj') collect(new OBJLoader().parse(new TextDecoder().decode(bytes)), geos, base(fileName));
   else if (ext === '3mf') collect(new ThreeMFLoader().parse(ab), geos, base(fileName));
+  else if (ext === 'ply') geos.push({ name: base(fileName), geo: new PLYLoader().parse(ab) });
+  else if (ext === 'amf') collect(new AMFLoader().parse(ab), geos, base(fileName));
+  else if (ext === 'off') geos.push({ name: base(fileName), geo: parseOFF(new TextDecoder().decode(bytes)) });
   else throw new Error('Format nicht unterstützt: ' + ext);
   return geos.map(g => ({ name: g.name, ...weld(g.geo) }));
+}
+function parseOFF(text) {
+  const tok = text.replace(/#.*$/gm, '').split(/\s+/).filter(Boolean); let i = 0;
+  if (/^[A-Z]*OFF$/.test(tok[0])) i++;
+  const nv = +tok[i++], nf = +tok[i++]; i++;
+  if (!(nv > 0 && nf > 0)) throw new Error('Ungültige OFF-Datei');
+  const pos = new Float32Array(nv * 3); for (let k = 0; k < nv * 3; k++) pos[k] = +tok[i++];
+  const idx = [];
+  for (let f = 0; f < nf; f++) { const n = +tok[i++]; const v = []; for (let k = 0; k < n; k++) v.push(+tok[i++]); for (let k = 1; k < n - 1; k++) idx.push(v[0], v[k], v[k + 1]); while (i < tok.length && !/^\d+$/.test(tok[i]) && f < nf - 1 && isNaN(+tok[i])) i++; }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(idx); return g;
 }
 const base = (n) => n.replace(/\.[^.]+$/, '');
 function collect(obj, out, fallback) {

@@ -4,6 +4,22 @@ const path = require('path');
 const fs = require('fs');
 
 let win;
+let forceClose = false;
+let rendererReady = false;
+let pendingFile = null; // per Doppelklick übergebene .dicp-Datei
+
+// Nur eine Instanz: weitere Doppelklicks öffnen die Datei im laufenden Fenster
+if (!app.requestSingleInstanceLock()) { app.quit(); }
+app.on('second-instance', (_e, argv) => {
+  if (!win) return;
+  if (win.isMinimized()) win.restore(); win.focus();
+  const f = projectFromArgv(argv); if (f) sendOpenFile(f);
+});
+function projectFromArgv(argv) { return argv.slice(1).find(a => /\.dicp$/i.test(a) && fs.existsSync(a)) || null; }
+function sendOpenFile(p) {
+  if (!rendererReady) { pendingFile = p; return; }
+  try { win.webContents.send('app:open-file', { path: p, data: fs.readFileSync(p) }); } catch (e) { dialog.showErrorBox('Datei konnte nicht geöffnet werden', String(e.message || e)); }
+}
 
 // Auch auf Rechnern mit gesperrten Grafiktreibern (z. B. Remote-Desktop) WebGL erlauben
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -26,7 +42,15 @@ function createWindow() {
   // Externe Links im Standardbrowser öffnen
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Schließen über Titelleiste, Alt+F4 oder Taskleiste: Oberfläche fragt bei ungespeicherten Änderungen nach
+  win.on('close', (e) => {
+    if (forceClose || !rendererReady) return;
+    e.preventDefault(); win.webContents.send('app:close-request');
+  });
+  const f = projectFromArgv(process.argv); if (f) pendingFile = f;
 }
+ipcMain.on('app:close-confirmed', () => { forceClose = true; if (win) win.close(); });
+ipcMain.on('app:ready', () => { rendererReady = true; if (pendingFile) { const p = pendingFile; pendingFile = null; sendOpenFile(p); } });
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
@@ -38,9 +62,16 @@ ipcMain.on('win:close', () => win && win.close());
 
 const FILTERS = {
   project: [{ name: 'Donrath Constructor Projekt', extensions: ['dicp'] }],
-  mesh: [{ name: '3D-Modelle', extensions: ['stl', 'obj', '3mf'] }],
+  mesh: [{ name: '3D-Modelle', extensions: ['stl', 'obj', '3mf', 'ply', 'amf', 'off'] }, { name: 'Alle Dateien', extensions: ['*'] }],
   stl: [{ name: 'STL', extensions: ['stl'] }],
+  stla: [{ name: 'STL (ASCII)', extensions: ['stl'] }],
   '3mf': [{ name: '3MF', extensions: ['3mf'] }],
+  obj: [{ name: 'OBJ', extensions: ['obj'] }],
+  ply: [{ name: 'PLY', extensions: ['ply'] }],
+  amf: [{ name: 'AMF', extensions: ['amf'] }],
+  off: [{ name: 'OFF', extensions: ['off'] }],
+  x3d: [{ name: 'X3D', extensions: ['x3d'] }],
+  png: [{ name: 'PNG-Bild', extensions: ['png'] }],
 };
 
 ipcMain.handle('file:open', async (_e, kind) => {

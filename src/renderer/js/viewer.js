@@ -70,6 +70,20 @@ export class Viewer {
       if (this.measure.active) { if (hit) this.addMeasurePoint(hit.point); return; }
       this.cb.onPick(hit ? hit.object.userData.nodeId : null, e.shiftKey || e.ctrlKey);
     });
+    // Rechtsklick ohne Ziehen → Kontextmenü (Ziehen mit rechts bleibt Verschieben der Ansicht)
+    let rDown = null;
+    canvas.addEventListener('pointerdown', (e) => { if (e.button === 2) rDown = { x: e.clientX, y: e.clientY }; });
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (rDown && Math.hypot(e.clientX - rDown.x, e.clientY - rDown.y) > 4) return;
+      const hit = this.pick(e);
+      let info = null;
+      if (hit) {
+        const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() : null;
+        info = { id: hit.object.userData.nodeId, point: hit.point.clone(), normal: n };
+      }
+      this.cb.onContext && this.cb.onContext(e.clientX, e.clientY, info);
+    });
     canvas.addEventListener('dblclick', (e) => { const hit = this.pick(e); if (hit) this.focusOn([hit.object.userData.nodeId]); });
 
     this.overhangOn = true;

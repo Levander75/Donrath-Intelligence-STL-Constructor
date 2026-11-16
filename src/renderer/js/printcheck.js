@@ -8,6 +8,12 @@ export const MATERIALS = {
   PETG: { density: 1.27, label: 'PETG' },
   ASA: { density: 1.07, label: 'ASA' },
   ABS: { density: 1.04, label: 'ABS' },
+  TPU: { density: 1.21, label: 'TPU (flexibel)' },
+  'PA / Nylon': { density: 1.14, label: 'PA / Nylon' },
+  PC: { density: 1.20, label: 'PC' },
+  'PLA-CF': { density: 1.29, label: 'PLA-CF' },
+  'PETG-CF': { density: 1.30, label: 'PETG-CF' },
+  'PA-CF': { density: 1.20, label: 'PA-CF' },
   'Resin (Standard)': { density: 1.12, label: 'Resin (Standard)' },
   'Resin (Tough)': { density: 1.15, label: 'Resin (Tough)' },
 };

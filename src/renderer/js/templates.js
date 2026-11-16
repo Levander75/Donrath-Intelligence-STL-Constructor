@@ -132,6 +132,74 @@ function wallHook(k, A, p) {
   return k.toBed(hook);
 }
 
+// ---------------------------------------------------------------------------
+// Stirnrad mit Evolventen-Näherung
+function gear(k, A, p) {
+  const z = Math.max(6, Math.round(p.teeth)), m = p.module, rp = z * m / 2, ra = rp + m, rf = Math.max(rp - 1.25 * m, 1);
+  const rb = rp * Math.cos(20 * Math.PI / 180), pts = [];
+  const inv = (a) => Math.tan(a) - a;
+  const tw = Math.PI / (2 * z) + inv(Math.acos(rb / rp)); // halbe Zahnbreite (Winkel) am Grundkreis-Bezug
+  for (let i = 0; i < z; i++) {
+    const c = (i * 2 * Math.PI) / z; const flank = [];
+    for (let j = 0; j <= 8; j++) {
+      const r = Math.max(rb, rf) + (ra - Math.max(rb, rf)) * (j / 8);
+      const a = Math.acos(Math.min(rb / r, 1)); flank.push([r, tw - inv(a)]);
+    }
+    pts.push([rf * Math.cos(c - tw - 0.6 * Math.PI / z), rf * Math.sin(c - tw - 0.6 * Math.PI / z)]);
+    for (const [r, t] of flank) pts.push([r * Math.cos(c - t), r * Math.sin(c - t)]);
+    for (const [r, t] of flank.slice().reverse()) pts.push([r * Math.cos(c + t), r * Math.sin(c + t)]);
+  }
+  let g = k.poly(pts, 0, p.h);
+  if (p.hub > 0) g = k.add(g, k.cyl(Math.max(p.hubD, p.bore + 2), p.h - 0.01, p.h + p.hub));
+  g = k.sub(g, p.flat ? k.sub(k.cyl(p.bore, -1, p.h + p.hub + 1), A.k(A.k(k.M.cube([p.bore, p.bore, p.h + p.hub + 4], true)).translate([0, p.bore * 0.9, (p.h + p.hub) / 2]))) : k.cyl(p.bore, -1, p.h + p.hub + 1));
+  return g;
+}
+
+// Namensschild / Türschild mit erhabenem oder vertieftem Text
+function nameplate(k, A, p, ctx) {
+  let plate = k.rbox(p.w, p.hgt, 0, p.t, Math.min(p.r, p.hgt / 2 - 0.1), Math.min(p.fil, p.t * 0.8));
+  const polys = ctx && ctx.textToPolygons ? ctx.textToPolygons(p.text || ' ', p.size) : [];
+  if (polys.length) {
+    const txt = k.centerXY(k.extrude(A.k(k.C.ofPolygons(polys, 'EvenOdd')), 0, p.depth));
+    plate = p.style === 'Vertieft' ? k.sub(plate, A.k(txt.translate([0, 0, p.t - p.depth + 0.001]))) : k.add(plate, A.k(txt.translate([0, 0, p.t - 0.01])));
+  }
+  if (p.holes === 'Ja') for (const x of [-p.w / 2 + 6, p.w / 2 - 6]) plate = k.sub(plate, k.cyl(3.4, -1, p.t + 1, x, 0), k.cone(3.4, 7, p.t - 1.8, p.t + 0.01, x, 0));
+  return plate;
+}
+
+// Kabelclip zum Anschrauben oder Kleben
+function cableclip(k, A, p) {
+  const d = p.d, t = p.t, w = p.w;
+  const ring = k.sub(k.cyl(d + 2 * t, 0, w), k.cyl(d, -1, w + 1));
+  const open = A.k(A.k(k.M.cube([d * 0.7, d + 2 * t, w + 2], true)).translate([0, d / 2 + t, w / 2]));
+  let clip = k.sub(ring, open);
+  const foot = A.k(k.extrude(k.rrect(d + 2 * t + 2 * p.tab, t, t / 2 - 0.01), 0, w).translate([0, -d / 2 - t / 2, 0]));
+  clip = k.add(clip, foot);
+  if (p.tab > 4) for (const x of [-(d / 2 + t + p.tab / 2), d / 2 + t + p.tab / 2]) clip = k.sub(clip, A.k(A.k(k.cyl(3.2, -1, 2 * t + 2)).rotate([90, 0, 0])).translate([x, -d / 2 + t, w / 2]));
+  return k.toBed(A.k(clip.rotate([90, 0, 0])));
+}
+
+// Drehknopf mit D-Bohrung und Riffelung
+function knob(k, A, p) {
+  const n = Math.round(p.ribs); let kn = k.rbox(p.d, p.d, 0, p.h, p.d / 2 - 0.01, Math.min(p.fil, p.h * 0.5));
+  if (n > 0) { const cuts = []; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; cuts.push(k.cyl(p.d * 0.12, -1, p.h + 1, Math.cos(a) * p.d / 2, Math.sin(a) * p.d / 2, 24)); } kn = k.sub(kn, cuts); }
+  const sh = k.sub(k.cyl(p.shaft, -1, p.depth), A.k(A.k(k.M.cube([p.shaft, p.shaft, p.depth + 4], true)).translate([0, p.shaft - (p.shaft - p.flat), p.depth / 2])));
+  kn = k.sub(kn, sh);
+  if (p.mark === 'Ja') kn = k.sub(kn, A.k(k.extrude(k.rrect(1.6, p.d * 0.3, 0.79), p.h - 0.8, p.h + 1).translate([0, p.d * 0.25, 0])));
+  return kn;
+}
+
+// Handy-/Tablet-Ständer
+function stand(k, A, p) {
+  const a = (p.angle * Math.PI) / 180, L = p.back, t = p.t;
+  // Grundplatte + Rückenlehne (schräg) + Auflagekante
+  const base = k.poly([[0, 0], [p.depth, 0], [p.depth, t], [0, t]], 0, p.w);
+  const bx = p.lipX - p.dev, back = k.poly([[bx, t - 0.01], [bx - t / Math.sin(a), t - 0.01], [bx - t / Math.sin(a) + Math.cos(a) * L, t + Math.sin(a) * L], [bx + Math.cos(a) * L, t + Math.sin(a) * L]], 0, p.w);
+  const lip = k.poly([[p.lipX, t - 0.01], [p.lipX + t, t - 0.01], [p.lipX + t, t + p.lip], [p.lipX, t + p.lip]], 0, p.w);
+  const m = k.union([base, back, lip]);
+  return k.toBed(A.k(A.k(m.rotate([90, 0, 0])).translate([-p.depth / 2, p.w / 2, 0])));
+}
+
 export const TEMPLATES = {
   halo: {
     label: 'TUBIQ Halo Handsender', icon: 'remote',
@@ -189,5 +257,51 @@ export const TEMPLATES = {
       num('depth', 'Ablagetiefe', 18, 5, 80, 0.5), num('lip', 'Randhöhe', 8, 2, 30, 0.5), num('screw', 'Schraube Ø', 3.6, 2, 6, 0.1),
     ],
     build: wallHook,
+  },
+  gear: {
+    label: 'Zahnrad', icon: 'settings',
+    desc: 'Stirnrad mit Evolventenverzahnung, Modul und Zähnezahl frei wählbar.',
+    params: [
+      num('teeth', 'Zähne', 20, 6, 200, 1), num('module', 'Modul', 1.5, 0.5, 5, 0.25), num('h', 'Breite', 8, 1, 60, 0.5),
+      num('bore', 'Bohrung Ø', 5, 1, 60, 0.1), sel('flat', 'D-Abflachung', ['Nein', 'Ja'], 'Nein'),
+      num('hub', 'Nabe Höhe', 0, 0, 30, 0.5), num('hubD', 'Nabe Ø', 14, 4, 80, 0.5),
+    ],
+    build: (k, A, p) => gear(k, A, { ...p, flat: p.flat === 'Ja' }),
+  },
+  nameplate: {
+    label: 'Namens-/Türschild', icon: 'text',
+    desc: 'Schild mit erhabenem oder vertieftem Text, optional mit Senkbohrungen.',
+    params: [
+      { key: 'text', label: 'Text', type: 'text', def: 'Donrath' }, num('size', 'Schrifthöhe', 12, 3, 80, 0.5),
+      sel('style', 'Schrift', ['Erhaben', 'Vertieft'], 'Erhaben'), num('depth', 'Schrifttiefe', 1.2, 0.2, 5, 0.1),
+      num('w', 'Breite', 100, 20, 300, 1), num('hgt', 'Höhe', 30, 10, 200, 1), num('t', 'Stärke', 3, 1, 10, 0.2),
+      num('r', 'Eckenradius', 4, 0.5, 30, 0.5), num('fil', 'Kante verrunden', 0.8, 0, 3, 0.1), sel('holes', 'Schraublöcher', ['Nein', 'Ja'], 'Nein'),
+    ],
+    build: nameplate,
+  },
+  cableclip: {
+    label: 'Kabelclip', icon: 'hook',
+    desc: 'Clip zum Einklipsen von Kabeln, mit Laschen zum Schrauben.',
+    params: [num('d', 'Kabel-Ø', 6, 2, 30, 0.1), num('t', 'Wandstärke', 1.6, 0.8, 4, 0.1), num('w', 'Breite', 8, 3, 30, 0.5), num('tab', 'Lasche', 7, 0, 20, 0.5)],
+    build: cableclip,
+  },
+  knob: {
+    label: 'Drehknopf', icon: 'ring',
+    desc: 'Potentiometer-Knopf mit D-Welle, Riffelung und Markierung.',
+    params: [
+      num('d', 'Durchmesser', 22, 8, 80, 0.5), num('h', 'Höhe', 15, 5, 60, 0.5), num('ribs', 'Riffeln', 18, 0, 60, 1), num('fil', 'Kante oben', 2, 0, 10, 0.5),
+      num('shaft', 'Welle Ø', 6.1, 2, 12, 0.05), num('flat', 'Abflachung auf', 4.6, 1, 12, 0.05), num('depth', 'Bohrtiefe', 11, 2, 50, 0.5), sel('mark', 'Markierung', ['Ja', 'Nein'], 'Ja'),
+    ],
+    build: knob,
+  },
+  stand: {
+    label: 'Handy-/Tabletständer', icon: 'remote',
+    desc: 'Ständer mit schräger Rückenlehne und Auflagekante.',
+    params: [
+      num('w', 'Breite', 70, 20, 250, 1), num('depth', 'Fußtiefe', 90, 30, 250, 1), num('t', 'Stärke', 5, 2, 12, 0.5),
+      num('angle', 'Neigung (°)', 65, 30, 85, 1), num('back', 'Lehnenlänge', 90, 30, 250, 1),
+      num('lipX', 'Kante bei', 22, 8, 120, 1), num('lip', 'Kantenhöhe', 12, 3, 40, 0.5), num('dev', 'Gerätedicke', 12, 4, 40, 0.5),
+    ],
+    build: stand,
   },
 };

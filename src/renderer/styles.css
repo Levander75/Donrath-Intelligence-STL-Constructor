@@ -171,3 +171,34 @@ input[type=color].field { padding: 2px; height: 28px; }
 .dialog table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .dialog td { padding: 4px 0; color: var(--text-2); } .dialog td:first-child { color: var(--text); width: 150px; }
 ::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 5px; border: 2px solid var(--panel); }
+
+/* Kontextmenü */
+#ctx { position: fixed; z-index: 120; min-width: 236px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 6px; box-shadow: 0 18px 44px rgba(0,0,0,.65); font-size: 13px; }
+#ctx .ctx-head { padding: 6px 10px 8px; color: var(--text-3); font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+#ctx button.ci { display: flex; width: 100%; align-items: center; gap: 10px; background: none; border: none; padding: 7px 10px; border-radius: 6px; cursor: pointer; text-align: left; color: var(--text); font-size: 13px; }
+#ctx button.ci svg { width: 15px; height: 15px; color: var(--text-2); flex-shrink: 0; }
+#ctx button.ci span { flex: 1; }
+#ctx button.ci kbd { color: var(--text-3); font-family: inherit; font-size: 11px; }
+#ctx button.ci:hover, #ctx .sub:hover > button.ci { background: var(--sel); }
+#ctx button.ci:disabled { opacity: .35; cursor: default; background: none; }
+#ctx button.ci.danger { color: var(--red); } #ctx button.ci.danger svg { color: var(--red); }
+#ctx hr { border: none; border-top: 1px solid var(--border-soft); margin: 5px 4px; }
+#ctx .sub { position: relative; }
+#ctx .sub > .flyout { display: none; position: absolute; left: 100%; top: -6px; margin-left: 4px; min-width: 200px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px; box-shadow: 0 18px 44px rgba(0,0,0,.65); }
+#ctx .sub.left > .flyout { left: auto; right: 100%; margin-left: 0; margin-right: 4px; }
+#ctx .sub:hover > .flyout { display: block; }
+#ctx .swatches { display: grid; grid-template-columns: repeat(6, 26px); gap: 6px; padding: 6px; }
+#ctx .swatches button { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); cursor: pointer; }
+#ctx .swatches button:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Exportdialog */
+.fmt-list { display: grid; gap: 6px; margin-top: 10px; max-height: 52vh; overflow: auto; }
+.fmt { display: grid; grid-template-columns: 22px 170px 1fr; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 8px; cursor: pointer; }
+.fmt:hover { border-color: var(--border); background: var(--sel); }
+.fmt span { color: var(--text-2); font-size: 12px; }
+.fmt input { accent-color: #fff; }
+/* Ziehen & Ablegen */
+body.dropping #viewport::after { content: 'Dateien ablegen – STL, OBJ, 3MF, PLY, AMF, OFF oder Projekt (.dicp)'; position: absolute; inset: 14px; border: 2px dashed rgba(255,255,255,.5);
+  border-radius: 14px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; letter-spacing: .5px; background: rgba(5,5,5,.55); z-index: 30; pointer-events: none; }

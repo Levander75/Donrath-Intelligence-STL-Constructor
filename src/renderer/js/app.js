@@ -6,7 +6,7 @@ import * as G from './geometry.js';
 import { TEMPLATES } from './templates.js';
 import { Viewer } from './viewer.js';
 import { runPrintCheck, MATERIALS, fmt } from './printcheck.js';
-import { toBinarySTL, to3MF, importMesh, serializeProject, parseProject } from './io.js';
+import { importMesh, serializeProject, parseProject, EXPORT_FORMATS, IMPORT_EXTENSIONS } from './io.js';
 import { icon } from './icons.js';
 import fontJson from '../assets/helvetiker_bold.typeface.json';
 
@@ -96,7 +96,14 @@ function refresh(immediate = false) {
   if (immediate) run(); else refreshTimer = setTimeout(run, 30);
 }
 function resultKey(n) { return JSON.stringify({ t: n.type, tp: n.template, p: n.params, a: n.asset, mf: n.mf, c: n.children, seg: state.doc.settings.seg }); }
-function resultOf(id) { const r = state.results.get(id); return r ? r.res : null; }
+function resultOf(id) {
+  const r = state.results.get(id); const n = state.doc.nodes.find(x => x.id === id);
+  if (!n) return r ? r.res : null;
+  // Fehlt das Ergebnis oder ist es veraltet, sofort (synchron) berechnen – Maße stimmen dann direkt nach einer Änderung
+  const key = resultKey(n);
+  if (!r || r.key !== key) { const nr = { key, res: G.evaluate(n, ctx()) }; state.results.set(id, nr); return nr.res; }
+  return r.res;
+}
 
 // Weltnetz eines Top-Level-Knotens
 function worldMesh(n) {
@@ -161,7 +168,7 @@ function booleanOp(type) {
 }
 function ungroup() {
   const n = state.sel.length === 1 && findNode(state.sel[0]);
-  if (!n || !n.node.children) { toast('Eine boolesche Operation oder Gruppe auswählen.', true); return; }
+  if (!n || !n.node.children) { toast('Eine Operation, Gruppe oder einen Modifikator auswählen.', true); return; }
   const kids = n.node.children.map(c => composeInto(n.node, c));
   const list = siblings(n.parent); const i = list.indexOf(n.node);
   list.splice(i, 1, ...kids);
@@ -232,12 +239,29 @@ async function newProject() { if (!(await confirmDiscard())) return; Object.assi
 async function openProject() {
   if (!(await confirmDiscard())) return;
   const files = await api.openFiles('project'); if (!files.length) return;
+  loadProjectData(new Uint8Array(files[0].data), files[0].path);
+}
+function loadProjectData(bytes, path) {
   try {
-    const { doc, assets } = parseProject(new Uint8Array(files[0].data));
-    Object.assign(state, { doc, assets, sel: [], filePath: files[0].path, undo: [], redo: [], check: null }); state.lastSnap = snapshot(); state.dirty = false;
+    const { doc, assets } = parseProject(bytes);
+    Object.assign(state, { doc, assets, sel: [], filePath: path || null, undo: [], redo: [], check: null }); state.lastSnap = snapshot(); state.dirty = false;
     G.clearCache(); state.results.clear(); viewer.setBed(doc.settings.bed); refresh(); setTimeout(() => viewer.focusOn(), 200);
     toast(`Projekt „${doc.name}“ geöffnet`);
   } catch (e) { toast('Projekt konnte nicht geöffnet werden: ' + e.message, true); }
+}
+// Dateien per Ziehen & Ablegen: Projekte öffnen, Modelle importieren
+async function dropFiles(list) {
+  const files = [...list]; const proj = files.find(f => /\.dicp$/i.test(f.name));
+  if (proj) { if (await confirmDiscard()) loadProjectData(new Uint8Array(await proj.arrayBuffer()), null); return; }
+  let added = 0; setBusy(true, 'Importiere …');
+  for (const f of files) {
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (!IMPORT_EXTENSIONS.includes(ext)) { toast(`${f.name}: Format nicht unterstützt`, true); continue; }
+    try { for (const m of importMesh(f.name, new Uint8Array(await f.arrayBuffer()))) { const aid = 'a' + uid(); state.assets[aid] = { vert: m.vert, tri: m.tri }; addNodeSilent({ type: 'import', asset: aid, name: m.name, params: {} }); added++; } }
+    catch (e) { toast(`${f.name}: ${e.message}`, true); }
+  }
+  setBusy(false);
+  if (added) { commit(`${added} Modell(e) importiert`); setTimeout(() => viewer.focusOn(), 300); }
 }
 async function saveProject(as = false) {
   const data = serializeProject(state.doc, usedAssets());
@@ -270,24 +294,30 @@ function addNodeSilent(node) {
   state.doc.nodes.push(node); state.sel = [node.id];
 }
 async function exportAs(kind) {
+  const F = EXPORT_FORMATS[kind]; if (!F) return;
   let nodes = selectedTop(); if (!nodes.length) nodes = state.doc.nodes.filter(n => n.visible !== false);
   if (!nodes.length) { toast('Nichts zum Exportieren.', true); return; }
+  refresh(true);
   const meshes = nodes.map(worldMesh).filter(Boolean);
   const bad = meshes.filter(m => !m.ok);
   if (bad.length) toast(`Achtung: ${bad.map(b => b.name).join(', ')} ist nicht wasserdicht.`, true);
   const below = meshes.some(m => { for (let i = 2; i < m.vert.length; i += 3) if (m.vert[i] < -0.01) return true; return false; });
   if (below) toast('Hinweis: Teile ragen unter das Druckbett. „Auf Bett legen“ (B) vor dem Export empfohlen.', true);
   const base = nodes.length === 1 ? nodes[0].name : (state.doc.name || 'Export');
-  let data;
-  if (kind === 'stl') {
-    // Mehrere Objekte zu einem Netz zusammenfassen
-    let tv = 0, tt = 0; meshes.forEach(m => { tv += m.vert.length; tt += m.tri.length; });
-    const vert = new Float32Array(tv), tri = new Uint32Array(tt); let ov = 0, ot = 0;
-    for (const m of meshes) { vert.set(m.vert, ov); for (let i = 0; i < m.tri.length; i++) tri[ot + i] = m.tri[i] + ov / 3; ov += m.vert.length; ot += m.tri.length; }
-    data = toBinarySTL(vert, tri);
-  } else data = to3MF(meshes.map(m => ({ name: m.name, vert: m.vert, tri: m.tri, color: m.color })));
-  const p = await api.saveFile(kind, safeName(base) + '.' + kind, data);
-  if (p) toast(`${kind.toUpperCase()} gespeichert: ${String(p).split(/[\\/]/).pop()}`);
+  const data = F.write(meshes.map(m => ({ name: m.name, vert: m.vert, tri: m.tri, color: m.color })));
+  const p = await api.saveFile(kind, safeName(base) + '.' + F.ext, data);
+  if (p) { state.doc.settings.lastExport = kind; toast(`${F.label} gespeichert: ${String(p).split(/[\\/]/).pop()}`); }
+}
+function exportDialog() {
+  const last = state.doc.settings.lastExport || '3mf';
+  const n = selectedTop().length;
+  dialog(`<h3>Exportieren</h3><p class="pinfo">${n ? `${n} ausgewähltes Objekt(e)` : 'Alle sichtbaren Objekte'} werden exportiert.</p>
+    <div class="fmt-list">${Object.entries(EXPORT_FORMATS).map(([k, f]) => `<label class="fmt"><input type="radio" name="fmt" value="${k}" ${k === last ? 'checked' : ''}><b>${esc(f.label)}</b><span>${esc(f.desc)}</span></label>`).join('')}</div>`,
+  (m) => { const k = m.querySelector('input[name=fmt]:checked')?.value; if (k) setTimeout(() => exportAs(k), 0); }, 'Exportieren …');
+}
+async function exportImage() {
+  const url = viewer.screenshot(); const bin = atob(url.split(',')[1]); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  const p = await api.saveFile('png', safeName(state.doc.name || 'Ansicht') + '.png', u); if (p) toast('Bild gespeichert');
 }
 const safeName = (s) => String(s).replace(/[\\/:*?"<>|]+/g, '_').trim() || 'Modell';
 
@@ -320,20 +350,300 @@ function renderCheck() {
 }
 
 // ---------------------------------------------------------------------------
+// Zurücksetzen, Zwischenablage, Fläche aufs Bett, Isolieren
+function resetTransform(what, ids) {
+  const nodes = (ids || state.sel).map(id => findNode(id)).filter(Boolean).map(f => f.node);
+  if (!nodes.length) return;
+  for (const n of nodes) {
+    if (what === 'rot' || what === 'all') n.rot = [0, 0, 0];
+    if (what === 'scale' || what === 'all') n.scale = [1, 1, 1];
+    if (what === 'pos' || what === 'all') n.pos = [0, 0, 0];
+  }
+  // Position 0 heißt: Mitte des Druckbetts, Unterkante auf Z = 0
+  if (what === 'pos' || what === 'all') {
+    for (const n of nodes) {
+      if (!state.doc.nodes.includes(n)) continue;
+      const b = worldBox(n); if (b.isEmpty()) continue;
+      const c = b.getCenter(new THREE.Vector3());
+      n.pos = [Math.round(-c.x * 1000) / 1000, Math.round(-c.y * 1000) / 1000, Math.round(-b.min.z * 1000) / 1000];
+    }
+  }
+  commit({ pos: 'Position auf 0 gesetzt', rot: 'Drehung zurückgesetzt', scale: 'Skalierung zurückgesetzt', all: 'Komplett zurückgesetzt' }[what]);
+}
+function copySel() {
+  const nodes = selectedTop(); if (!nodes.length) return;
+  state.clip = JSON.stringify(nodes); setMsg(`${nodes.length} Objekt(e) kopiert`);
+}
+function cutSel() { copySel(); del(); }
+function paste() {
+  if (!state.clip) { toast('Zwischenablage ist leer.'); return; }
+  const nodes = JSON.parse(state.clip);
+  for (const n of nodes) { reId(n); n.pos = [n.pos[0] + 10, n.pos[1] + 10, n.pos[2]]; }
+  state.doc.nodes.push(...nodes); state.sel = nodes.map(n => n.id); state.clip = JSON.stringify(nodes);
+  commit(`${nodes.length} Objekt(e) eingefügt`);
+}
+function layFlat(id, normal) {
+  const n = state.doc.nodes.find(x => x.id === id); if (!n || !normal) return;
+  const cur = new THREE.Quaternion().setFromEuler(new THREE.Euler(...n.rot.map(THREE.MathUtils.degToRad), 'ZYX'));
+  const q = new THREE.Quaternion().setFromUnitVectors(normal.clone().normalize(), new THREE.Vector3(0, 0, -1));
+  const e = new THREE.Euler().setFromQuaternion(q.multiply(cur), 'ZYX');
+  n.rot = [e.x, e.y, e.z].map(v => Math.round(THREE.MathUtils.radToDeg(v) * 1000) / 1000);
+  const b = worldBox(n); if (!b.isEmpty()) n.pos[2] = Math.round((n.pos[2] - b.min.z) * 1000) / 1000;
+  commit('Mit der Fläche aufs Bett gelegt');
+}
+function isolate(id) { for (const n of state.doc.nodes) n.visible = n.id === id; commit('Nur dieses Objekt sichtbar'); }
+function showAll() { walk(state.doc.nodes, n => { n.visible = true; }); commit('Alles eingeblendet'); }
+function setColor(color) { const nodes = state.sel.map(id => findNode(id)).filter(Boolean); nodes.forEach(f => (f.node.color = color)); commit('Farbe geändert'); }
+async function exportSingle(id, kind) { const keep = state.sel; state.sel = [id]; await exportAs(kind); state.sel = keep; }
+function renameNode(id) {
+  state.expanded.add(topLevelOf(id)?.id); renderTree();
+  const row = document.querySelector(`.tnode[data-id="${id}"]`); if (row) row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+}
+
+// ---------------------------------------------------------------------------
+// Modifikatoren (Aushöhlen, Abschneiden, Muster) – zerstörungsfrei, jederzeit änderbar
+function wrapNode(n, type, params = {}) {
+  const b = worldBox(n); const c = b.isEmpty() ? new THREE.Vector3() : b.getCenter(new THREE.Vector3());
+  const cx = Math.round(c.x * 100) / 100, cy = Math.round(c.y * 100) / 100;
+  return { id: uid(), type, name: `${G.MODIFIERS[type].label}: ${n.name}`, params: { ...G.defaultParams(G.MODIFIERS[type].params), ...params }, pos: [cx, cy, 0], rot: [0, 0, 0], scale: [1, 1, 1],
+    color: n.color, visible: true, children: [{ ...n, visible: true, pos: [n.pos[0] - cx, n.pos[1] - cy, n.pos[2]] }] };
+}
+function modify(type, params) {
+  refresh(true);
+  const nodes = selectedTop(); if (!nodes.length) { toast('Zuerst ein Objekt auswählen.', true); return; }
+  const out = nodes.map(n => { const w = wrapNode(n, type, params); const i = state.doc.nodes.indexOf(n); state.doc.nodes.splice(i, 1, w); return w; });
+  state.sel = out.map(w => w.id);
+  commit(`${G.MODIFIERS[type].label} angewendet – Werte rechts unter „Parameter“ anpassen`);
+}
+function splitSel(axis = 'Z') {
+  refresh(true);
+  const n = selectedTop()[0]; if (!n || selectedTop().length !== 1) { toast('Genau ein Objekt zum Teilen auswählen.', true); return; }
+  const a = wrapNode(n, 'cut', { axis, at: 50, keep: 'Unten / Minus' });
+  const copy = JSON.parse(JSON.stringify(n)); reId(copy);
+  const b = wrapNode(copy, 'cut', { axis, at: 50, keep: 'Oben / Plus' });
+  a.name = `${n.name} (Teil 1)`; b.name = `${n.name} (Teil 2)`;
+  const i = state.doc.nodes.indexOf(n); state.doc.nodes.splice(i, 1, a, b);
+  state.sel = [a.id, b.id]; refresh(true);
+  const ba = worldBox(a), bb = worldBox(b);
+  if (!bb.isEmpty() && !ba.isEmpty()) {
+    if (axis === 'Z') b.pos[2] -= bb.min.z; // obere Hälfte aufs Bett
+    b.pos[0] += Math.round((ba.max.x - bb.min.x + 10) * 100) / 100;
+  }
+  commit('Geteilt – Schnitthöhe unter „Parameter“ einstellbar');
+}
+function align(axis, where) {
+  const nodes = selectedTop(); if (nodes.length < 2) { toast('Zum Ausrichten mindestens zwei Objekte wählen.', true); return; }
+  const i = { x: 0, y: 1, z: 2 }[axis]; const k = ['x', 'y', 'z'][i];
+  const ref = worldBox(nodes[0]); const target = where === 'min' ? ref.min[k] : where === 'max' ? ref.max[k] : (ref.min[k] + ref.max[k]) / 2;
+  for (const n of nodes.slice(1)) {
+    const b = worldBox(n); if (b.isEmpty()) continue;
+    const v = where === 'min' ? b.min[k] : where === 'max' ? b.max[k] : (b.min[k] + b.max[k]) / 2;
+    n.pos[i] = Math.round((n.pos[i] + target - v) * 1000) / 1000;
+  }
+  commit('Ausgerichtet am zuerst gewählten Objekt');
+}
+function distribute(axis, gap = null) {
+  const nodes = selectedTop(); if (nodes.length < 3 && gap == null) { toast('Zum Verteilen mindestens drei Objekte wählen.', true); return; }
+  const i = { x: 0, y: 1 }[axis]; const k = ['x', 'y'][i];
+  const list = nodes.map(n => ({ n, b: worldBox(n) })).filter(o => !o.b.isEmpty()).sort((a, b) => a.b.min[k] - b.b.min[k]);
+  const total = list.reduce((s, o) => s + (o.b.max[k] - o.b.min[k]), 0);
+  const span = list[list.length - 1].b.max[k] - list[0].b.min[k];
+  const g = gap != null ? gap : (span - total) / (list.length - 1);
+  let cur = list[0].b.min[k];
+  for (const o of list) { o.n.pos[i] = Math.round((o.n.pos[i] + cur - o.b.min[k]) * 1000) / 1000; cur += o.b.max[k] - o.b.min[k] + g; }
+  commit(gap != null ? `Mit ${gap} mm Abstand aufgereiht` : 'Gleichmäßig verteilt');
+}
+function rotate90(axis, dir = 1) {
+  const nodes = selectedTop(); if (!nodes.length) return;
+  const ax = new THREE.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
+  for (const n of nodes) {
+    const before = worldBox(n); const c0 = before.getCenter(new THREE.Vector3());
+    const q = new THREE.Quaternion().setFromAxisAngle(ax, dir * Math.PI / 2).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...n.rot.map(THREE.MathUtils.degToRad), 'ZYX')));
+    const e = new THREE.Euler().setFromQuaternion(q, 'ZYX');
+    n.rot = [e.x, e.y, e.z].map(v => Math.round(THREE.MathUtils.radToDeg(v) * 1000) / 1000);
+    const after = worldBox(n); if (!after.isEmpty() && !before.isEmpty()) {
+      const c1 = after.getCenter(new THREE.Vector3());
+      n.pos[0] = Math.round((n.pos[0] + c0.x - c1.x) * 1000) / 1000; n.pos[1] = Math.round((n.pos[1] + c0.y - c1.y) * 1000) / 1000;
+      n.pos[2] = Math.round((n.pos[2] - after.min.z + Math.max(before.min.z, 0)) * 1000) / 1000;
+    }
+  }
+  commit(`Um ${axis.toUpperCase()} um ${dir > 0 ? '+' : '−'}90° gedreht`);
+}
+function sizeDialog() {
+  const n = selectedTop()[0]; if (!n) { toast('Zuerst ein Objekt auswählen.', true); return; }
+  refresh(true); const b = worldBox(n); if (b.isEmpty()) return; const sz = b.getSize(new THREE.Vector3());
+  dialog(`<h3>Maße setzen – ${esc(n.name)}</h3>
+    <div class="pgroup"><div class="prow"><label for="dX">Breite X (mm)</label><input id="dX" class="field" type="number" step="0.1" value="${sz.x.toFixed(2)}"></div>
+    <div class="prow"><label for="dY">Tiefe Y (mm)</label><input id="dY" class="field" type="number" step="0.1" value="${sz.y.toFixed(2)}"></div>
+    <div class="prow"><label for="dZ">Höhe Z (mm)</label><input id="dZ" class="field" type="number" step="0.1" value="${sz.z.toFixed(2)}"></div>
+    <div class="prow"><label for="dU">Seitenverhältnis halten</label><input id="dU" type="checkbox" checked></div>
+    <div class="prow"><label for="dP">… oder Skalierung in %</label><input id="dP" class="field" type="number" step="1" placeholder="z. B. 150"></div></div>
+    <p class="pinfo">Die Maße beziehen sich auf die Außenmaße im Druckbett. Bei gedrehten Objekten wird entlang der Objektachsen skaliert.</p>`, (m) => {
+    const g = (id) => +m.querySelector('#' + id).value; const uni = m.querySelector('#dU').checked; const pct = g('dP');
+    let f = [g('dX') / sz.x, g('dY') / sz.y, g('dZ') / sz.z];
+    if (pct > 0) f = [pct / 100, pct / 100, pct / 100];
+    else if (uni) { const changed = [0, 1, 2].find(i => Math.abs(f[i] - 1) > 1e-6); const u = changed == null ? 1 : f[changed]; f = [u, u, u]; }
+    if (f.some(x => !(x > 0) || !isFinite(x))) { toast('Ungültige Maße.', true); return; }
+    // Weltachsen auf Objektachsen abbilden (bei 90°-Drehungen exakt)
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...n.rot.map(THREE.MathUtils.degToRad), 'ZYX'));
+    const loc = [0, 0, 0];
+    for (let i = 0; i < 3; i++) { const v = new THREE.Vector3(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0).applyQuaternion(q); const w = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)]; loc[i] = w[0] * f[0] + w[1] * f[1] + w[2] * f[2]; }
+    const c0 = b.getCenter(new THREE.Vector3());
+    n.scale = n.scale.map((s, i) => Math.round(s * loc[i] * 10000) / 10000);
+    refresh(true); const a = worldBox(n); const c1 = a.getCenter(new THREE.Vector3());
+    n.pos = [n.pos[0] + c0.x - c1.x, n.pos[1] + c0.y - c1.y, n.pos[2] - a.min.z + b.min.z].map(v => Math.round(v * 1000) / 1000);
+    commit('Maße gesetzt');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Kontextmenü (Rechtsklick)
+const COLORS = ['#F4F5F6', '#DFE2E5', '#C9CDD1', '#A3A9AF', '#7A8189', '#3D4650', '#1D2329', '#F87171', '#FBBF24', '#86EFAC', '#93C5FD', '#C4B5FD'];
+function openContext(x, y, target) {
+  const el = $('#ctx'); const items = [];
+  const it = (label, run, opts = {}) => items.push({ label, run, ...opts });
+  const sep = () => items.push('-');
+  const f = target && target.id ? findNode(target.id) : null;
+  if (f) {
+    const n = f.node; const isTop = !f.parent; const multi = selectedTop().length > 1;
+    if (!state.sel.includes(n.id)) { state.sel = [n.id]; refresh(); }
+    items.push({ head: multi ? `${state.sel.length} Objekte` : n.name });
+    if (!multi) it('Umbenennen', () => renameNode(n.id), { icon: 'text', key: 'F2' });
+    it('Duplizieren', duplicate, { icon: 'duplicate', key: 'Strg+D', disabled: !isTop });
+    it('Kopieren', copySel, { icon: 'duplicate', key: 'Strg+C', disabled: !isTop });
+    it('Ausschneiden', cutSel, { key: 'Strg+X', disabled: !isTop });
+    sep();
+    it('Auf Bett legen', () => dropToBed(), { icon: 'bed', key: 'B', disabled: !isTop });
+    if (target.normal && isTop && !multi) it('Mit dieser Fläche aufs Bett legen', () => layFlat(n.id, target.normal), { icon: 'bed' });
+    it('Auf Bett zentrieren', () => centerOnBed(false), { icon: 'center', key: 'C', disabled: !isTop });
+    items.push({ label: 'Zurücksetzen', icon: 'undo', sub: [
+      { label: 'Position auf 0 (Bettmitte)', run: () => resetTransform('pos') },
+      { label: 'Drehung auf 0°', run: () => resetTransform('rot') },
+      { label: 'Skalierung auf 100 %', run: () => resetTransform('scale') },
+      '-', { label: 'Alles zurücksetzen', run: () => resetTransform('all') }] });
+    items.push({ label: 'Drehen 90°', icon: 'rotate', disabled: !isTop, sub: [
+      { label: 'Um X +90°', run: () => rotate90('x', 1) }, { label: 'Um X −90°', run: () => rotate90('x', -1) },
+      { label: 'Um Y +90°', run: () => rotate90('y', 1) }, { label: 'Um Y −90°', run: () => rotate90('y', -1) },
+      { label: 'Um Z +90°', run: () => rotate90('z', 1) }, { label: 'Um Z −90°', run: () => rotate90('z', -1) }] });
+    if (isTop) it('Maße setzen …', sizeDialog, { icon: 'scale' });
+    items.push({ label: 'Spiegeln', icon: 'mirror', sub: [
+      { label: 'An X spiegeln', run: () => mirror('x') }, { label: 'An Y spiegeln', run: () => mirror('y') }, { label: 'An Z spiegeln', run: () => mirror('z') }], disabled: multi });
+    items.push({ label: 'Farbe', icon: 'box', colors: true });
+    sep();
+    if (isTop) items.push({ label: 'Verändern', icon: 'settings', sub: [
+      { label: 'Aushöhlen (Wandstärke) …', run: () => modify('shell') },
+      { label: 'Aushöhlen, oben offen', run: () => modify('shell', { open: 'Oben offen' }) },
+      '-', { label: 'Teilen (waagerecht, Mitte)', run: () => splitSel('Z') }, { label: 'Teilen (senkrecht X)', run: () => splitSel('X') },
+      { label: 'Abschneiden …', run: () => modify('cut') },
+      '-', { label: 'Muster: Reihe', run: () => modify('pattern', { mode: 'Reihe X' }) }, { label: 'Muster: Raster', run: () => modify('pattern', { mode: 'Raster XY' }) },
+      { label: 'Muster: Kreis', run: () => modify('pattern', { mode: 'Kreis' }) }] });
+    if (multi) {
+      items.push({ label: 'Ausrichten', icon: 'arrange', sub: [
+        { label: 'Links (X min)', run: () => align('x', 'min') }, { label: 'Mitte X', run: () => align('x', 'mid') }, { label: 'Rechts (X max)', run: () => align('x', 'max') }, '-',
+        { label: 'Vorne (Y min)', run: () => align('y', 'min') }, { label: 'Mitte Y', run: () => align('y', 'mid') }, { label: 'Hinten (Y max)', run: () => align('y', 'max') }, '-',
+        { label: 'Unten (Z min)', run: () => align('z', 'min') }, { label: 'Mitte Z', run: () => align('z', 'mid') }, { label: 'Oben (Z max)', run: () => align('z', 'max') }, '-',
+        { label: 'Gleichmäßig verteilen X', run: () => distribute('x') }, { label: 'Gleichmäßig verteilen Y', run: () => distribute('y') },
+        { label: 'Aufreihen X (5 mm Abstand)', run: () => distribute('x', 5) }] });
+      it('Vereinen', () => booleanOp('union'), { icon: 'union', key: 'Strg+U' });
+      it('Abziehen (erstes minus Rest)', () => booleanOp('difference'), { icon: 'difference', key: 'Strg+M' });
+      it('Schnittmenge', () => booleanOp('intersection'), { icon: 'intersection' });
+      it('Hülle (umspannen)', () => booleanOp('hull'), { icon: 'hull' });
+      it('Gruppieren', () => booleanOp('group'), { icon: 'group', key: 'Strg+G' });
+      sep();
+    }
+    if (n.children) it('Auflösen', ungroup, { icon: 'ungroup', key: 'Strg+Umschalt+G' });
+    if (!isTop) it('Aus Operation herausnehmen', () => takeOut(n.id), { icon: 'ungroup' });
+    it(n.visible === false ? 'Einblenden' : 'Ausblenden', () => { n.visible = n.visible === false; commit(); }, { icon: n.visible === false ? 'eye' : 'eyeOff', key: 'H' });
+    if (isTop && !multi) it('Nur dieses anzeigen', () => isolate(n.id), { icon: 'eye' });
+    it('Einpassen', () => viewer.focusOn(selectedTop().map(x => x.id)), { icon: 'focus', key: 'F' });
+    sep();
+    if (isTop) {
+      items.push({ label: multi ? 'Auswahl exportieren' : 'Exportieren', icon: 'export', sub: Object.entries(EXPORT_FORMATS).map(([k, f]) => ({ label: f.label + ' …', run: () => exportAs(k) })) });
+      sep();
+    }
+    it('Löschen', del, { icon: 'delete', key: 'Entf', danger: true });
+  } else {
+    items.push({ head: 'Szene' });
+    items.push({ label: 'Form einfügen', icon: 'box', sub: Object.keys(G.PRIMITIVES).map(t => ({ label: G.PRIMITIVES[t].label, run: () => addPrimitive(t) })) });
+    items.push({ label: 'Vorlage einfügen', icon: 'remote', sub: Object.keys(TEMPLATES).map(t => ({ label: TEMPLATES[t].label, run: () => addTemplate(t) })) });
+    it('Importieren …', importFiles, { icon: 'import', key: 'Strg+I' });
+    it('Einfügen', paste, { key: 'Strg+V', disabled: !state.clip });
+    sep();
+    it('Alles auswählen', ACTIONS.selectAll.run, { key: 'Strg+A', disabled: !state.doc.nodes.length });
+    it('Alles einblenden', showAll, { icon: 'eye', disabled: !state.doc.nodes.length });
+    it('Alles anordnen', arrange, { icon: 'arrange', disabled: !state.doc.nodes.length });
+    sep();
+    items.push({ label: 'Ansicht', icon: 'iso', sub: [
+      { label: 'ISO', run: () => viewer.view('iso') }, { label: 'Oben', run: () => viewer.view('top') }, { label: 'Vorne', run: () => viewer.view('front') },
+      { label: 'Rechts', run: () => viewer.view('right') }, '-', { label: 'Alles einpassen', run: () => viewer.focusOn() }] });
+    it('Bild der Ansicht speichern …', exportImage, { icon: 'export' });
+    it('Druck-Check', doCheck, { icon: 'check', key: 'F5' });
+  }
+  const btn = (o) => `<button class="ci ${o.danger ? 'danger' : ''}" ${o.disabled ? 'disabled' : ''}>${o.icon ? icon(o.icon) : '<svg viewBox="0 0 24 24"></svg>'}<span>${esc(o.label)}</span>${o.key ? `<kbd>${o.key}</kbd>` : o.sub || o.colors ? icon('chevR') : ''}</button>`;
+  const flat = [];
+  const render = (list) => list.map(o => {
+    if (o === '-') return '<hr>';
+    if (o.head) return `<div class="ctx-head">${esc(o.head)}</div>`;
+    if (o.colors) return `<div class="sub">${btn(o)}<div class="flyout"><div class="swatches">${COLORS.map(c => `<button data-color="${c}" style="background:${c}" aria-label="Farbe ${c}"></button>`).join('')}</div></div></div>`;
+    if (o.sub) return `<div class="sub">${btn(o)}<div class="flyout">${o.sub.map(x => x === '-' ? '<hr>' : (flat.push(x), `<button class="ci" data-i="${flat.length - 1}"><span>${esc(x.label)}</span></button>`)).join('')}</div></div>`;
+    flat.push(o); return btn(o).replace('<button class="ci', `<button data-i="${flat.length - 1}" class="ci`);
+  }).join('');
+  el.innerHTML = render(items);
+  el.classList.remove('hidden');
+  // Position im Fenster halten
+  const r = el.getBoundingClientRect(); const W = window.innerWidth, H = window.innerHeight;
+  el.style.left = Math.min(x, W - r.width - 8) + 'px'; el.style.top = Math.min(y, H - r.height - 8) + 'px';
+  el.querySelectorAll('.sub').forEach(sb => {
+    if (x + r.width + 210 > W) sb.classList.add('left');
+    sb.addEventListener('mouseenter', () => { // Untermenü im Fenster halten
+      const fo = sb.querySelector('.flyout'); fo.style.top = '-6px'; const fr = fo.getBoundingClientRect();
+      if (fr.bottom > H - 8) fo.style.top = (-6 - (fr.bottom - H + 8)) + 'px';
+    });
+  });
+  el.onclick = (e) => {
+    const c = e.target.closest('[data-color]'); if (c) { closeContext(); setColor(c.dataset.color); return; }
+    const b = e.target.closest('[data-i]'); if (!b || b.disabled) return;
+    closeContext(); flat[+b.dataset.i].run();
+  };
+}
+function closeContext() { $('#ctx').classList.add('hidden'); }
+
+// ---------------------------------------------------------------------------
 // Oberfläche: Menü & Werkzeugleiste
 const ACTIONS = {
   new: { label: 'Neues Projekt', key: 'Strg+N', run: newProject, icon: 'new' },
   open: { label: 'Projekt öffnen …', key: 'Strg+O', run: openProject, icon: 'open' },
   save: { label: 'Speichern', key: 'Strg+S', run: () => saveProject(false), icon: 'save' },
   saveAs: { label: 'Speichern unter …', key: 'Strg+Umschalt+S', run: () => saveProject(true) },
-  import: { label: 'Importieren (STL, OBJ, 3MF) …', key: 'Strg+I', run: importFiles, icon: 'import' },
+  import: { label: 'Importieren (STL, OBJ, 3MF, PLY, AMF, OFF) …', key: 'Strg+I', run: importFiles, icon: 'import' },
   exportStl: { label: 'Als STL exportieren …', key: 'Strg+E', run: () => exportAs('stl'), icon: 'export' },
-  export3mf: { label: 'Als 3MF exportieren (mit Farben) …', key: 'Strg+Umschalt+E', run: () => exportAs('3mf') },
+  export3mf: { label: 'Als 3MF exportieren (mit Farben) …', run: () => exportAs('3mf') },
+  exportAny: { label: 'Exportieren als …', key: 'Strg+Umschalt+E', run: exportDialog },
+  exportPng: { label: 'Bild der Ansicht speichern …', run: exportImage },
+  hull: { label: 'Hülle (umspannen)', run: () => booleanOp('hull'), icon: 'hull', needMulti: true },
+  shell: { label: 'Aushöhlen …', run: () => modify('shell'), icon: 'shell', needSel: true },
+  cutMod: { label: 'Abschneiden …', run: () => modify('cut'), icon: 'cutplane', needSel: true },
+  split: { label: 'Teilen (waagerecht)', run: () => splitSel('Z'), icon: 'cutplane', needSel: true },
+  pattern: { label: 'Muster / Anordnung …', run: () => modify('pattern'), icon: 'pattern', needSel: true },
+  size: { label: 'Maße setzen …', key: 'Strg+L', run: sizeDialog, icon: 'scale', needSel: true },
+  rotX: { label: 'Um X +90° drehen', run: () => rotate90('x', 1), needSel: true }, rotY: { label: 'Um Y +90° drehen', run: () => rotate90('y', 1), needSel: true }, rotZ: { label: 'Um Z +90° drehen', run: () => rotate90('z', 1), needSel: true },
+  alignL: { label: 'Links ausrichten', run: () => align('x', 'min'), needMulti: true }, alignCX: { label: 'Mittig ausrichten (X)', run: () => align('x', 'mid'), needMulti: true },
+  alignB: { label: 'Unten ausrichten (Z)', run: () => align('z', 'min'), needMulti: true }, distX: { label: 'Gleichmäßig verteilen (X)', run: () => distribute('x'), needMulti: true },
   quit: { label: 'Beenden', run: () => api.close() },
   undo: { label: 'Rückgängig', key: 'Strg+Z', run: undo, icon: 'undo' },
   redo: { label: 'Wiederholen', key: 'Strg+Y', run: redo, icon: 'redo' },
   duplicate: { label: 'Duplizieren', key: 'Strg+D', run: duplicate, icon: 'duplicate', needSel: true },
   delete: { label: 'Löschen', key: 'Entf', run: del, icon: 'delete', needSel: true },
+  copy: { label: 'Kopieren', key: 'Strg+C', run: copySel, needSel: true },
+  cut: { label: 'Ausschneiden', key: 'Strg+X', run: cutSel, needSel: true },
+  paste: { label: 'Einfügen', key: 'Strg+V', run: paste },
+  rename: { label: 'Umbenennen', key: 'F2', run: () => state.sel.length === 1 && renameNode(state.sel[0]), needSel: true },
+  hide: { label: 'Aus-/Einblenden', key: 'H', run: () => { const fs = state.sel.map(id => findNode(id)).filter(Boolean); if (!fs.length) return; const v = fs[0].node.visible === false; fs.forEach(f => (f.node.visible = v)); commit(); }, needSel: true },
+  showAll: { label: 'Alles einblenden', key: 'Umschalt+H', run: showAll },
+  resetPos: { label: 'Position auf 0 setzen', key: 'Strg+0', run: () => resetTransform('pos'), needSel: true },
+  resetRot: { label: 'Drehung zurücksetzen', run: () => resetTransform('rot'), needSel: true },
+  resetScale: { label: 'Skalierung zurücksetzen', run: () => resetTransform('scale'), needSel: true },
+  resetAll: { label: 'Alles zurücksetzen', run: () => resetTransform('all'), needSel: true },
   selectAll: { label: 'Alles auswählen', key: 'Strg+A', run: () => { state.sel = state.doc.nodes.map(n => n.id); refresh(); } },
   mirrorX: { label: 'Spiegeln X', run: () => mirror('x'), needSel: true }, mirrorY: { label: 'Spiegeln Y', run: () => mirror('y'), needSel: true }, mirrorZ: { label: 'Spiegeln Z', run: () => mirror('z'), needSel: true },
   union: { label: 'Vereinen', key: 'Strg+U', run: () => booleanOp('union'), icon: 'union', needMulti: true },
@@ -364,10 +674,10 @@ for (const t of Object.keys(G.PRIMITIVES)) ACTIONS['add_' + t] = { label: G.PRIM
 for (const t of Object.keys(TEMPLATES)) ACTIONS['tpl_' + t] = { label: TEMPLATES[t].label, run: () => addTemplate(t), icon: TEMPLATES[t].icon };
 
 const MENUS = [
-  ['Datei', ['new', 'open', 'save', 'saveAs', '-', 'import', 'exportStl', 'export3mf', '-', 'settings', '-', 'quit']],
-  ['Bearbeiten', ['undo', 'redo', '-', 'duplicate', 'delete', 'selectAll', '-', 'mirrorX', 'mirrorY', 'mirrorZ']],
+  ['Datei', ['new', 'open', 'save', 'saveAs', '-', 'import', 'exportStl', 'export3mf', 'exportAny', 'exportPng', '-', 'settings', '-', 'quit']],
+  ['Bearbeiten', ['undo', 'redo', '-', 'cut', 'copy', 'paste', 'duplicate', 'delete', 'rename', '-', 'selectAll', 'hide', 'showAll', '-', 'mirrorX', 'mirrorY', 'mirrorZ', '-', 'resetPos', 'resetRot', 'resetScale', 'resetAll']],
   ['Einfügen', [...Object.keys(G.PRIMITIVES).map(t => 'add_' + t), '-', ...Object.keys(TEMPLATES).map(t => 'tpl_' + t)]],
-  ['Ändern', ['union', 'difference', 'intersection', 'group', 'ungroup', '-', 'move', 'rotate', 'scale', 'snap', '-', 'bed', 'center', 'arrange']],
+  ['Ändern', ['union', 'difference', 'intersection', 'hull', 'group', 'ungroup', '-', 'shell', 'split', 'cutMod', 'pattern', '-', 'move', 'rotate', 'scale', 'size', 'rotX', 'rotY', 'rotZ', 'snap', '-', 'alignL', 'alignCX', 'alignB', 'distX', '-', 'bed', 'center', 'arrange']],
   ['Ansicht', ['viewIso', 'viewTop', 'viewFront', 'viewRight', 'focus', '-', 'wire', 'section', 'overhang']],
   ['Werkzeuge', ['measure', 'check']],
   ['Hilfe', ['shortcuts', 'about']],
@@ -388,6 +698,9 @@ function buildChrome() {
     b.addEventListener('mouseenter', () => { if (mb.querySelector('.menu.open')) { closeMenus(); b.parentElement.classList.add('open'); } });
   });
   document.addEventListener('click', closeMenus);
+  document.addEventListener('pointerdown', (e) => { if (!e.target.closest('#ctx')) closeContext(); });
+  window.addEventListener('blur', closeContext);
+  document.addEventListener('contextmenu', (e) => { if (!e.target.closest('#gl, #tree, input, textarea')) e.preventDefault(); });
   $('#toolbar').innerHTML = TOOLBAR.map(g => `<div class="tgroup">${g.map(a => `<button class="tbtn" data-act="${a}" title="${ACTIONS[a].label}${ACTIONS[a].key ? ' (' + ACTIONS[a].key + ')' : ''}" aria-label="${ACTIONS[a].label}">${icon(ACTIONS[a].icon)}${['union', 'difference', 'check', 'import'].includes(a) ? `<span>${{ union: 'Vereinen', difference: 'Abziehen', check: 'Druck-Check', import: 'Import' }[a]}</span>` : ''}</button>`).join('')}</div>`).join('');
   $('#viewBtns').innerHTML = [['viewIso', 'ISO'], ['viewTop', 'OBEN'], ['viewFront', 'VORN'], ['viewRight', 'RECHTS']].map(([a, t]) => `<button data-act="${a}" title="${ACTIONS[a].label}">${t}</button>`).join('') + `<button data-act="focus" title="Einpassen (F)">${icon('focus')}</button><button data-act="wire" title="Drahtgitter">${icon('wire')}</button>`;
   $('#templateList').innerHTML = Object.entries(TEMPLATES).map(([id, T]) => `<div class="tcard" data-act="tpl_${id}" role="button" tabindex="0"><h4>${icon(T.icon)}${esc(T.label)}</h4><p>${esc(T.desc)}</p></div>`).join('') +
@@ -439,7 +752,7 @@ function renderTree() {
   if (!state.doc.nodes.length) { el.innerHTML = `<div class="tree-empty">Noch keine Objekte.<br><br>Form in der Werkzeugleiste anklicken, eine Vorlage wählen oder ein Modell importieren (Strg+I).</div>`; return; }
   const row = (n, depth) => {
     const r = resultOf(n.id); const hasKids = n.children && n.children.length; const open = state.expanded.has(n.id);
-    const ic = n.type === 'template' ? TEMPLATES[n.template]?.icon : n.type === 'import' ? 'import3d' : n.type;
+    const ic = n.type === 'template' ? TEMPLATES[n.template]?.icon : n.type === 'import' ? 'import3d' : n.type === 'cut' ? 'cutplane' : n.type;
     let h = `<div class="tnode ${state.sel.includes(n.id) ? 'sel' : ''} ${n.visible === false ? 'hiddenNode' : ''}" data-id="${n.id}" role="treeitem" style="padding-left:${6 + depth * 16}px">
       <span class="tw" data-tw="${n.id}">${hasKids ? icon(open ? 'chevD' : 'chevR') : ''}</span><span class="ic">${icon(ic)}</span>
       <span class="nm" title="Doppelklick zum Umbenennen">${esc(n.name)}</span>${r && !r.ok ? `<span class="err" title="${esc(r.error)}">${icon('warn')}</span>` : ''}
@@ -457,6 +770,11 @@ function bindTree() {
     const eye = e.target.closest('[data-eye]'); if (eye) { const f = findNode(eye.dataset.eye); f.node.visible = f.node.visible === false; commit(f.node.visible ? 'Eingeblendet' : 'Ausgeblendet'); return; }
     const row = e.target.closest('.tnode'); if (!row) return;
     pick(row.dataset.id, e.shiftKey || e.ctrlKey);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault(); const row = e.target.closest('.tnode');
+    if (row && !state.sel.includes(row.dataset.id)) { state.sel = [row.dataset.id]; refresh(); }
+    openContext(e.clientX, e.clientY, row ? { id: row.dataset.id } : null);
   });
   el.addEventListener('dblclick', (e) => {
     const row = e.target.closest('.tnode'); if (!row) return;
@@ -489,6 +807,7 @@ function renderProps() {
   if (state.sel.length > 1) {
     el.innerHTML = `<p class="pinfo" style="margin-top:4px">${state.sel.length} Objekte ausgewählt. Das zuerst gewählte ist bei „Abziehen“ der Grundkörper.</p>
       <div class="btn-row"><button class="btn" data-act="union">Vereinen</button><button class="btn" data-act="difference">Abziehen</button><button class="btn" data-act="intersection">Schnittmenge</button><button class="btn" data-act="group">Gruppieren</button></div>
+      <div class="btn-row"><button class="btn" data-act="hull">Hülle</button><button class="btn" data-act="alignL">Links bündig</button><button class="btn" data-act="alignB">Unten bündig</button><button class="btn" data-act="distX">Verteilen</button></div>
       <div class="btn-row"><button class="btn" data-act="bed">Auf Bett legen</button><button class="btn" data-act="center">Zentrieren</button><button class="btn" data-act="duplicate">Duplizieren</button><button class="btn" data-act="delete">Löschen</button></div>`;
     updateToolbarState(); return;
   }
@@ -503,7 +822,8 @@ function renderProps() {
     <div class="prow trio"><label>Drehung °</label>${numIn('rot.0', n.rot[0], 'X', 15)}${numIn('rot.1', n.rot[1], 'Y', 15)}${numIn('rot.2', n.rot[2], 'Z', 15)}</div>
     <div class="prow trio"><label>Skalierung</label>${numIn('scale.0', n.scale[0], 'X', 0.05)}${numIn('scale.1', n.scale[1], 'Y', 0.05)}${numIn('scale.2', n.scale[2], 'Z', 0.05)}</div>
     <div class="btn-row">${isTop ? '<button class="btn" data-act="bed">Auf Bett legen</button><button class="btn" data-act="center">Zentrieren</button>' : `<button class="btn" data-takeout="${n.id}">Aus Operation herausnehmen</button>`}
-    <button class="btn" data-act="mirrorX">Spiegeln X</button><button class="btn" data-act="mirrorY">Y</button><button class="btn" data-act="mirrorZ">Z</button></div></div>`;
+    <button class="btn" data-act="mirrorX">Spiegeln X</button><button class="btn" data-act="mirrorY">Y</button><button class="btn" data-act="mirrorZ">Z</button></div>
+    ${isTop ? '<div class="btn-row"><button class="btn" data-act="resetPos">Position 0</button><button class="btn" data-act="resetRot">Drehung 0</button><button class="btn" data-act="size">Maße setzen …</button></div><div class="btn-row"><button class="btn" data-act="shell">Aushöhlen</button><button class="btn" data-act="split">Teilen</button><button class="btn" data-act="pattern">Muster</button></div>' : ''}</div>`;
   const schema = G.paramSchema(n);
   if (schema.length) {
     h += `<div class="pgroup"><h5>Parameter</h5>` + schema.map(s => {
@@ -515,7 +835,10 @@ function renderProps() {
       return `<div class="prow"><label>${esc(s.label)}</label>${input}</div>`;
     }).join('') + `</div>`;
   }
-  if (n.children) {
+  if (n.children && G.MODIFIERS[n.type]) {
+    h += `<div class="pgroup"><h5>Modifikator</h5><p class="pinfo">${esc(G.MODIFIERS[n.type].label)} wirkt auf „${esc(n.children[0]?.name)}“. Werte oben unter „Parameter“ ändern; das Original bleibt erhalten.</p><div class="btn-row"><button class="btn" data-act="ungroup">Modifikator entfernen</button></div></div>`;
+  }
+  if (n.children && G.BOOLEAN_TYPES[n.type]) {
     h += `<div class="pgroup"><h5>Operation</h5><div class="prow"><label>Art</label><select class="field" data-optype="1">${Object.entries(G.BOOLEAN_TYPES).map(([k, l]) => `<option value="${k}" ${k === n.type ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <p class="pinfo">${n.children.length} Teile. Bei „Differenz“ wird vom ersten Teil alles Weitere abgezogen. Teile im Szenenbaum aufklappen und einzeln verschieben.</p>
       <div class="btn-row"><button class="btn" data-act="ungroup">Auflösen</button></div></div>`;
@@ -557,8 +880,8 @@ function bindProps() {
 
 // ---------------------------------------------------------------------------
 // Dialoge
-function dialog(html, onOk) {
-  const m = $('#modal'); m.innerHTML = `<div class="dialog">${html}<div class="btn-row" style="justify-content:flex-end;margin-top:18px">${onOk ? '<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-ok>Übernehmen</button>' : '<button class="btn primary" data-close>Schließen</button>'}</div></div>`;
+function dialog(html, onOk, okLabel = 'Übernehmen') {
+  const m = $('#modal'); m.innerHTML = `<div class="dialog">${html}<div class="btn-row" style="justify-content:flex-end;margin-top:18px">${onOk ? '<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-ok>${okLabel}</button>' : '<button class="btn primary" data-close>Schließen</button>'}</div></div>`;
   m.classList.remove('hidden');
   const close = () => m.classList.add('hidden');
   m.querySelectorAll('[data-close]').forEach(b => b.onclick = close);
@@ -566,11 +889,20 @@ function dialog(html, onOk) {
   m.onclick = (e) => { if (e.target === m) close(); };
   m.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Escape') close(); };
   const first = m.querySelector('input, select, button'); first && first.focus();
+  const pr = m.querySelector('#sPr'); if (pr) pr.onchange = () => { const b = PRINTERS[pr.value]; if (b) ['sBx', 'sBy', 'sBz'].forEach((id, i) => (m.querySelector('#' + id).value = b[i])); };
 }
+const PRINTERS = {
+  'Bambu Lab X1 / P1 / P2S': [256, 256, 256], 'Bambu Lab A1': [256, 256, 256], 'Bambu Lab A1 mini': [180, 180, 180], 'Bambu Lab H2D': [325, 320, 325],
+  'Prusa Core One': [250, 220, 270], 'Prusa MK4S': [250, 210, 220], 'Prusa MINI+': [180, 180, 180], 'Prusa XL': [360, 360, 360],
+  'Creality Ender-3 V3': [220, 220, 250], 'Creality K1 / K2': [220, 220, 250], 'Creality K1 Max': [300, 300, 300], 'Anycubic Kobra 3': [250, 250, 260],
+  'Elegoo Neptune 4 Pro': [225, 225, 265], 'Voron 2.4 (350)': [350, 350, 340], 'Qidi Plus4': [305, 305, 280],
+  'Harz: Elegoo Saturn 4 Ultra': [218, 123, 220], 'Harz: Anycubic Photon Mono M7': [223, 126, 230], 'Harz: Formlabs Form 4': [200, 125, 210],
+};
 function settingsDialog() {
   const s = state.doc.settings;
   dialog(`<h3>Einstellungen</h3>
     <div class="pgroup"><h5>Drucker</h5>
+      <div class="prow"><label for="sPr">Profil</label><select id="sPr" class="field"><option value="">– eigener Bauraum –</option>${Object.entries(PRINTERS).map(([k, b]) => `<option value="${k}" ${b.join() === s.bed.join() ? 'selected' : ''}>${k} (${b.join(' × ')})</option>`).join('')}</select></div>
       <div class="prow"><label for="sBx">Bauraum X (mm)</label><input id="sBx" class="field" type="number" value="${s.bed[0]}"></div>
       <div class="prow"><label for="sBy">Bauraum Y (mm)</label><input id="sBy" class="field" type="number" value="${s.bed[1]}"></div>
       <div class="prow"><label for="sBz">Bauraum Z (mm)</label><input id="sBz" class="field" type="number" value="${s.bed[2]}"></div>
@@ -621,6 +953,7 @@ function bindKeys() {
   window.addEventListener('keydown', (e) => {
     if (e.target.matches('input, select, textarea') || !$('#modal').classList.contains('hidden')) return;
     const k = keyName(e);
+    if (k === 'Escape' && !$('#ctx').classList.contains('hidden')) { closeContext(); return; }
     if (k === 'Escape') { if (state.measure) setMeasure(false); else { state.sel = []; refresh(); } closeMenus(); return; }
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key) && selectedTop().length) {
       const d = e.shiftKey ? 10 : 1; const v = { ArrowLeft: [-d, 0, 0], ArrowRight: [d, 0, 0], ArrowUp: [0, d, 0], ArrowDown: [0, -d, 0], PageUp: [0, 0, d], PageDown: [0, 0, -d] }[e.key];
@@ -640,7 +973,8 @@ async function main() {
   setBusy(true, 'Lade Geometrie-Kern …');
   await G.initGeometry(ManifoldModule, { locateFile: () => './manifold.wasm' });
   viewer = new Viewer($('#gl'), $('#labels'), {
-    onPick: (id, add) => pick(id, add),
+    onPick: (id, add) => { closeContext(); pick(id, add); },
+    onContext: (x, y, info) => openContext(x, y, info),
     onTransform: (id, t, final) => {
       const n = state.doc.nodes.find(x => x.id === id); if (!n) return;
       Object.assign(n, t);
@@ -657,7 +991,20 @@ async function main() {
   state.lastSnap = snapshot();
   setBusy(false);
   refresh(true);
-  window.__dic = { state, ACTIONS, viewer, G, api }; // für Tests
+  // Ziehen & Ablegen
+  document.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
+  document.addEventListener('drop', (e) => { e.preventDefault(); document.body.classList.remove('dropping'); if (e.dataTransfer.files.length) dropFiles(e.dataTransfer.files); });
+  // Schließen (Titelleiste, Alt+F4, Taskleiste): bei ungespeicherten Änderungen nachfragen
+  api.onCloseRequest && api.onCloseRequest(async () => {
+    if (!state.dirty || !state.doc.nodes.length) { api.confirmClose(); return; }
+    const r = await api.confirm('Änderungen vor dem Beenden speichern?', `„${state.doc.name || 'Unbenannt'}“ wurde geändert.`, ['Speichern', 'Nicht speichern', 'Abbrechen']);
+    if (r === 0) { await saveProject(false); if (!state.dirty) api.confirmClose(); } else if (r === 1) api.confirmClose();
+  });
+  // Per Doppelklick geöffnete .dicp-Datei
+  api.onOpenFile && api.onOpenFile(async (f) => { if (await confirmDiscard()) loadProjectData(new Uint8Array(f.data), f.path); });
+  api.ready && api.ready();
+  window.__dic = { state, ACTIONS, viewer, G, api, modify, splitSel, align, distribute, rotate90, exportAs, resetTransform, paste, copySel, layFlat, openContext, dropFiles }; // für Tests
 }
 function renderPropsLive(n) {
   // Während des Ziehens nur die Zahlenfelder aktualisieren

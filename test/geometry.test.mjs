@@ -22,4 +22,15 @@ for (const [id, T] of Object.entries(TEMPLATES)) {
   }
 }
 check('Differenz Quader − Zylinder', { type: 'difference', params: {}, children: [{ type: 'box', params: {} }, { type: 'cylinder', params: { d: 10, h: 30 }, pos: [0, 0, -5] }] }, 1);
+const box = (w = 20, x = 0) => ({ type: 'box', params: { w, d: 20, h: 20 }, pos: [x, 0, 0] });
+check('Hülle zweier Kugeln', { type: 'hull', params: {}, children: [{ type: 'sphere', params: {} }, { type: 'sphere', params: {}, pos: [30, 0, 0] }] }, 1);
+for (const open of ['Geschlossen', 'Oben offen', 'Unten offen']) {
+  const node = { type: 'shell', params: { t: 2, open }, children: [box()] }; check('Aushöhlen Quader ' + open, node, 1);
+  const r = G.evaluate(node, ctx); const exp = open === 'Geschlossen' ? 8000 - 16 ** 3 : 8000 - 16 * 16 * 18;
+  if (Math.abs(r.volume - exp) > 1) { fail++; console.log('✘ Volumen Aushöhlen', open, r.volume.toFixed(1), 'erwartet', exp); }
+}
+check('Aushöhlen Zylinder', { type: 'shell', params: { t: 1.6 }, children: [{ type: 'cylinder', params: {} }] }, 1);
+check('Aushöhlen Kugel', { type: 'shell', params: { t: 1.5 }, children: [{ type: 'sphere', params: {} }] }, 1);
+check('Abschneiden Z 50 % unten', { type: 'cut', params: {}, children: [box()] }, 1);
+for (const mode of ['Reihe X', 'Reihe Y', 'Raster XY', 'Kreis']) check('Muster ' + mode, { type: 'pattern', params: { mode }, children: [box(10)] }, mode === 'Raster XY' ? 12 : 4);
 console.log(`\n${n - fail}/${n} bestanden`); process.exit(fail ? 1 : 0);
