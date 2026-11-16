@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' data: blob:; font-src 'self' data:">
+<title>Donrath Intelligence STL Constructor</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app">
+  <header id="titlebar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><span class="brand-main">DONRATH INTELLIGENCE</span><span class="brand-sub">STL CONSTRUCTOR</span></div>
+    <nav id="menubar" aria-label="Hauptmenü"></nav>
+    <div class="doc-title" id="docTitle">Unbenannt</div>
+    <div class="win-btns">
+      <button id="wMin" aria-label="Minimieren"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+      <button id="wMax" aria-label="Maximieren"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg></button>
+      <button id="wClose" class="close" aria-label="Schließen"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+    </div>
+  </header>
+
+  <div id="toolbar" role="toolbar" aria-label="Werkzeuge"></div>
+
+  <main id="workspace">
+    <aside id="left" class="panel">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="scene" role="tab">Szene</button>
+        <button class="tab" data-tab="templates" role="tab">Vorlagen</button>
+      </div>
+      <div class="tab-body" id="tab-scene"><div id="tree" role="tree" aria-label="Szenenbaum"></div></div>
+      <div class="tab-body hidden" id="tab-templates"><div id="templateList"></div></div>
+    </aside>
+
+    <section id="viewport">
+      <canvas id="gl"></canvas>
+      <div id="viewOverlay">
+        <div class="view-btns" id="viewBtns"></div>
+        <div id="sectionCtl" class="floating hidden">
+          <label for="sectionZ">Schnitt Z</label>
+          <input type="range" id="sectionZ" min="0" max="100" step="0.1" value="50">
+          <span id="sectionVal">50,0 mm</span>
+        </div>
+        <div id="measureInfo" class="floating hidden"></div>
+        <div id="busy" class="hidden"><span class="spinner"></span><span id="busyText">Berechne …</span></div>
+      </div>
+      <div id="labels"></div>
+    </section>
+
+    <aside id="right" class="panel">
+      <div class="panel-head">Eigenschaften</div>
+      <div id="props" class="scroll"></div>
+      <div class="panel-head row">Druck-Check <button id="runCheck" class="btn small">Prüfen</button></div>
+      <div id="check" class="scroll"></div>
+    </aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="stSel">Keine Auswahl</span>
+    <span id="stDims"></span>
+    <span id="stVol"></span>
+    <span id="stTri"></span>
+    <span class="grow"></span>
+    <span id="stMsg"></span>
+    <span id="stBed"></span>
+  </footer>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<div id="modal" class="hidden" role="dialog" aria-modal="true"></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+{
+  "name": "donrath-intelligence-stl-constructor",
+  "productName": "Donrath Intelligence STL Constructor",
+  "version": "1.0.0",
+  "description": "Parametrischer 3D-Konstruktor für den 3D-Druck – Formen, boolesche Operationen, Vorlagen, Druck-Check, STL/3MF.",
+  "author": "Donrath Intelligence",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "build:renderer": "node build.mjs",
+    "start": "npm run build:renderer && electron .",
+    "dist": "node build.mjs --min && electron-builder --win --x64",
+    "dist:zip": "node build.mjs --min && electron-builder --win zip --x64",
+    "test": "node test/geometry.test.mjs"
+  },
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.2",
+    "manifold-3d": "^3.5.5",
+    "three": "^0.187.0",
+    "three-mesh-bvh": "^0.9.1"
+  },
+  "build": {
+    "appId": "de.donrath-intelligence.stl-constructor",
+    "productName": "Donrath Intelligence STL Constructor",
+    "copyright": "© Donrath Intelligence",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/main/**",
+      "dist/renderer/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "dicp",
+        "name": "Donrath Constructor Projekt",
+        "description": "Donrath Constructor Projekt"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "build/icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Donrath STL Constructor"
+    },
+    "electronLanguages": [
+      "de",
+      "en-US"
+    ]
+  },
+  "dependencies": {}
+}

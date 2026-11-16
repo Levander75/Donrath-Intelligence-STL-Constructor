@@ -1,0 +1,28 @@
+# Baut Installer (.exe) und portable ZIP auf einem Windows-Runner.
+# Start: bei jedem Tag v* (z. B. v1.0.0) oder manuell unter "Actions → Run workflow".
+name: Windows-Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node build.mjs --min
+      - run: npx electron-builder --win nsis zip --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Donrath-STL-Constructor-Windows
+          path: |
+            release/*.exe
+            release/*.zip
